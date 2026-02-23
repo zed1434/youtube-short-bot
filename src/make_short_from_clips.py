@@ -1,3 +1,6 @@
+import tempfile
+import glob
+import webvtt
 import asyncio
 import json
 import random
@@ -18,6 +21,57 @@ CLIPS_JSON = CLIPS_DIR / "clips.json"
 
 FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
+def get_transcript_via_ytdlp(url: str, lang: str = "en") -> str:
+    """
+    Downloads subtitles only (no video) using yt-dlp.
+    Tries manual subtitles first; falls back to auto subtitles.
+    Returns plain text.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        outtmpl = str(Path(td) / "sub.%(ext)s")
+
+        # Try normal subtitles
+        cmd1 = [
+            "yt-dlp",
+            "--skip-download",
+            "--write-subs",
+            "--sub-langs", lang,
+            "--sub-format", "vtt",
+            "-o", outtmpl,
+            url,
+        ]
+        try:
+            run(cmd1)
+        except Exception:
+            pass
+
+        files = glob.glob(str(Path(td) / "sub*.vtt"))
+        if not files:
+            # Try auto subtitles
+            cmd2 = [
+                "yt-dlp",
+                "--skip-download",
+                "--write-auto-subs",
+                "--sub-langs", lang,
+                "--sub-format", "vtt",
+                "-o", outtmpl,
+                url,
+            ]
+            run(cmd2)
+            files = glob.glob(str(Path(td) / "sub*.vtt"))
+
+        if not files:
+            raise RuntimeError("yt-dlp could not fetch subtitles (manual or auto).")
+
+        # Parse VTT
+        text_parts = []
+        for caption in webvtt.read(files[0]):
+            line = caption.text.strip()
+            if line:
+                text_parts.append(line)
+        text = " ".join(text_parts)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
 
 def run(cmd: list[str]) -> None:
     subprocess.run(cmd, check=True)
@@ -211,7 +265,9 @@ def main():
     p.add_argument("--lang", default="en", help="Transcript language (en, el, etc.)")
     p.add_argument("--voice", default="en-US-GuyNeural", help="Edge TTS voice")
     p.add_argument("--tags", default="", help="Comma-separated tags to choose from your clips.json")
+    p.add_argument("--example_text", default="", help="Paste transcript/script here if fetching fails.")
     args = p.parse_args()
+    
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -222,7 +278,14 @@ def main():
         raise SystemExit("No clips in assets/clips/clips.json")
 
     # 1) Transcript
-    transcript = get_transcript_text(args.url, lang=args.lang)
+        transcript = ""
+    if args.example_text.strip():
+        transcript = args.example_text.strip()
+    else:
+        try:
+            transcript = get_transcript_text(args.url, lang=args.lang)
+        except Exception:
+            transcript = get_transcript_via_ytdlp(args.url, lang=args.lang)
 
     # 2) New script (free fallback rewrite)
     script = simple_style_rewrite(transcript, args.niche)
